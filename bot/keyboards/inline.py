@@ -63,10 +63,19 @@ def admin_menu() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+STATUS_EMOJI = {
+    "new": "🆕",
+    "in_progress": "🔴",
+    "waiting_client": "⏳",
+    "closed": "⚫",
+}
+
+
 def dialogs_list(dialogs: list[tuple]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for user_id, name, status, msg_count in dialogs:
-        label = f"{'🔴' if status == 'active' else '⚫'} {name or f'ID {user_id}'} ({msg_count})"
+        emoji = STATUS_EMOJI.get(status, "⚫")
+        label = f"{emoji} {name or f'ID {user_id}'} ({msg_count})"
         builder.row(
             InlineKeyboardButton(text=label, callback_data=f"admin:open_dialog:{user_id}"),
         )

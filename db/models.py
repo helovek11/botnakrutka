@@ -11,7 +11,6 @@ from sqlalchemy import (
     BigInteger,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -43,7 +42,7 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False),
+        String(36),
         primary_key=True,
         default=lambda: str(uuid.uuid4()),
     )
@@ -51,7 +50,7 @@ class Conversation(Base):
         BigInteger, ForeignKey("users.telegram_id"), nullable=False
     )
     status: Mapped[str] = mapped_column(
-        String(32), default="active", index=True
+        String(32), default="new", index=True
     )
     title: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -72,7 +71,7 @@ class Message(Base):
     __tablename__ = "messages"
 
     id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False),
+        String(36),
         primary_key=True,
         default=lambda: str(uuid.uuid4()),
     )
@@ -87,7 +86,8 @@ class Message(Base):
     is_from_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     media_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    forward_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    forward_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    forward_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

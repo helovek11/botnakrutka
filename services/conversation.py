@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Conversation, Message, User, ButtonStats
+
+ACTIVE_STATUSES = ("new", "in_progress", "waiting_client")
 
 
 async def get_or_create_user(
@@ -40,26 +42,32 @@ async def get_or_create_active_conversation(
     result = await session.execute(
         select(Conversation).where(
             Conversation.user_id == user_id,
-            Conversation.status == "active",
+            Conversation.status.in_(ACTIVE_STATUSES),
         )
     )
     conv = result.scalar_one_or_none()
 
     if conv is None:
-        conv = Conversation(user_id=user_id, status="active")
+        conv = Conversation(user_id=user_id, status="new")
         session.add(conv)
         await session.commit()
 
     return conv
 
 
-async def close_conversation(session: AsyncSession, conversation_id: str) -> None:
+async def update_conversation_status(
+    session: AsyncSession, conversation_id: str, status: str
+) -> None:
     await session.execute(
         update(Conversation)
         .where(Conversation.id == conversation_id)
-        .values(status="closed")
+        .values(status=status, updated_at=datetime.now(timezone.utc))
     )
     await session.commit()
+
+
+async def close_conversation(session: AsyncSession, conversation_id: str) -> None:
+    await update_conversation_status(session, conversation_id, "closed")
 
 
 async def save_message(
@@ -72,6 +80,7 @@ async def save_message(
     file_id: str | None = None,
     telegram_message_id: int | None = None,
     forward_message_id: int | None = None,
+    forward_chat_id: int | None = None,
 ) -> Message:
     msg = Message(
         conversation_id=conversation_id,
@@ -82,10 +91,40 @@ async def save_message(
         file_id=file_id,
         telegram_message_id=telegram_message_id,
         forward_message_id=forward_message_id,
+        forward_chat_id=forward_chat_id,
     )
     session.add(msg)
     await session.commit()
     return msg
+
+
+async def update_message_forward(
+    session: AsyncSession,
+    message_id: str,
+    forward_message_id: int,
+    forward_chat_id: int,
+) -> None:
+    await session.execute(
+        update(Message)
+        .where(Message.id == message_id)
+        .values(
+            forward_message_id=forward_message_id,
+            forward_chat_id=forward_chat_id,
+        )
+    )
+    await session.commit()
+
+
+async def find_message_by_forward(
+    session: AsyncSession, forward_message_id: int, forward_chat_id: int
+) -> Message | None:
+    result = await session.execute(
+        select(Message).where(
+            Message.forward_message_id == forward_message_id,
+            Message.forward_chat_id == forward_chat_id,
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_active_dialogs(session: AsyncSession) -> list[tuple]:
@@ -98,7 +137,7 @@ async def get_active_dialogs(session: AsyncSession) -> list[tuple]:
         )
         .join(Conversation, User.telegram_id == Conversation.user_id)
         .join(Message, Message.conversation_id == Conversation.id)
-        .where(Conversation.status == "active")
+        .where(Conversation.status.in_(ACTIVE_STATUSES))
         .group_by(User.telegram_id, User.full_name, Conversation.status)
         .order_by(func.max(Message.created_at).desc())
     )

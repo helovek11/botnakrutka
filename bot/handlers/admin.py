@@ -1,7 +1,7 @@
 import logging
 
 from aiogram import Router, F
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -17,15 +17,17 @@ from bot.keyboards.inline import (
     quick_replies_list,
     cancel_button,
 )
-from bot.states import BroadcastStates, QuickReplyStates, AdminReplyStates
-from db.models import QuickReply
+from bot.states import BroadcastStates, QuickReplyStates
+from db.models import QuickReply, Conversation
 from services.conversation import (
     get_or_create_user,
     get_or_create_active_conversation,
     get_active_dialogs,
     get_conversation_messages,
     close_conversation,
+    update_conversation_status,
     save_message,
+    find_message_by_forward,
     get_button_stats,
 )
 from services.broadcaster import broadcast_message
@@ -35,14 +37,6 @@ logger = logging.getLogger(__name__)
 router = Router()
 router.message.filter(IsAdminFilter())
 router.callback_query.filter(IsAdminFilter())
-
-
-def admin_reply_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="✏️ Ответить", callback_data=f"admin:reply:{user_id}"),
-    )
-    return builder.as_markup()
 
 
 @router.message(Command("admin"))
@@ -101,13 +95,13 @@ async def open_dialog(callback: CallbackQuery, session: AsyncSession):
 
 
 @router.callback_query(F.data.startswith("admin:reply:"))
-async def start_reply(callback: CallbackQuery, state: FSMContext):
+async def start_reply(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[-1])
-    await state.set_state(AdminReplyStates.waiting_for_reply)
-    await state.update_data(reply_to_user_id=user_id)
     await callback.message.answer(
-        "✏️ Введите ответ (текст, фото, видео или документ):",
-        reply_markup=cancel_button(),
+        f"✏️ Ответьте пользователю **ID {user_id}**\n\n"
+        "Просто ответьте на любое его сообщение в этом чате "
+        "(через Reply в Telegram), и бот доставит ответ.",
+        parse_mode="Markdown",
     )
     await callback.answer()
 
@@ -215,7 +209,7 @@ async def broadcast_text_received(message: Message, state: FSMContext):
 
 
 @router.message(BroadcastStates.waiting_for_text)
-async def broadcast_text_received_non_text(message: Message, state: FSMContext):
+async def broadcast_text_received_non_text(message: Message):
     await message.answer("Пожалуйста, отправьте текстовое сообщение.")
 
 
@@ -251,38 +245,52 @@ async def broadcast_confirm(
     await state.clear()
 
 
-@router.message(AdminReplyStates.waiting_for_reply)
-async def admin_reply_handler(
-    message: Message, state: FSMContext, config: Config, session: AsyncSession
+@router.message(F.reply_to_message)
+async def admin_reply_via_reply(
+    message: Message, config: Config, session: AsyncSession, state: FSMContext
 ):
-    data = await state.get_data()
-    user_id = data.get("reply_to_user_id")
-    if not user_id:
-        await message.answer("Ошибка: не указан пользователь для ответа.")
-        await state.clear()
+    current_state = await state.get_state()
+    if current_state is not None:
         return
 
+    replied = message.reply_to_message
+    if not replied:
+        return
+
+    msg_record = await find_message_by_forward(
+        session,
+        forward_message_id=replied.message_id,
+        forward_chat_id=message.chat.id,
+    )
+    if not msg_record:
+        return
+
+    conv = await session.get(Conversation, msg_record.conversation_id)
+    if conv is None:
+        return
+
+    user_id = conv.user_id
+
+    user_info = extract_user_info(message)
+    admin_user = await get_or_create_user(
+        session,
+        telegram_id=user_info["telegram_id"],
+        username=user_info["username"],
+        full_name=user_info["full_name"],
+    )
+
+    text_content = message.text or message.caption or ""
+    admin_display = (
+        f"@{admin_user.username}" if admin_user.username
+        else admin_user.full_name or "Администратор"
+    )
+    text_to_user = (
+        f"✉️ **Ответ от {admin_display}:**\n\n{text_content}"
+    )
+
+    media_type = None
+    file_id = None
     try:
-        user_info = extract_user_info(message)
-        admin_user = await get_or_create_user(
-            session,
-            telegram_id=user_info["telegram_id"],
-            username=user_info["username"],
-            full_name=user_info["full_name"],
-        )
-        conv = await get_or_create_active_conversation(session, user_id)
-
-        text_content = message.text or message.caption or ""
-        admin_display = (
-            f"@{admin_user.username}" if admin_user.username
-            else admin_user.full_name or "Администратор"
-        )
-        text_to_user = (
-            f"✉️ **Ответ от {admin_display}:**\n\n{text_content}"
-        )
-
-        media_type = None
-        file_id = None
         if message.photo:
             media_type = "photo"
             file_id = message.photo[-1].file_id
@@ -329,12 +337,18 @@ async def admin_reply_handler(
             telegram_message_id=sent.message_id,
         )
 
-        await message.answer("✅ **Ответ отправлен пользователю!**", parse_mode="Markdown")
+        await update_conversation_status(session, conv.id, "waiting_client")
+
+        await message.reply(
+            "✅ **Ответ отправлен!**",
+            parse_mode="Markdown",
+        )
     except Exception as e:
         logger.error(f"Failed to send reply to {user_id}: {e}")
-        await message.answer(f"❌ **Ошибка при отправке:** {e}", parse_mode="Markdown")
-
-    await state.clear()
+        await message.reply(
+            f"❌ **Ошибка:** {e}",
+            parse_mode="Markdown",
+        )
 
 
 @router.callback_query(F.data == "admin:cancel")

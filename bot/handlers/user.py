@@ -11,10 +11,17 @@ from bot.keyboards.inline import main_menu, socials_buttons, back_button
 from services.conversation import (
     get_or_create_user,
     get_or_create_active_conversation,
+    get_conversation_messages,
     save_message,
+    update_message_forward,
+    update_conversation_status,
+    find_message_by_forward,
     increment_button_click,
 )
 from utils.helpers import extract_user_info
+
+logger = logging.getLogger(__name__)
+router = Router()
 
 
 def admin_forward_keyboard(user_id: int) -> InlineKeyboardMarkup:
@@ -23,9 +30,6 @@ def admin_forward_keyboard(user_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="✏️ Ответить", callback_data=f"admin:reply:{user_id}"),
     )
     return builder.as_markup()
-
-logger = logging.getLogger(__name__)
-router = Router()
 
 
 @router.message(CommandStart())
@@ -179,7 +183,7 @@ async def forward_user_message(
         media_type = "audio"
         file_id = message.audio.file_id
 
-    await save_message(
+    msg_record = await save_message(
         session,
         conversation_id=conv.id,
         from_user_id=user.telegram_id,
@@ -188,6 +192,9 @@ async def forward_user_message(
         file_id=file_id,
         telegram_message_id=message.message_id,
     )
+
+    if conv.status == "waiting_client":
+        await update_conversation_status(session, conv.id, "in_progress")
 
     await message.answer(
         "✅ **Ваше сообщение отправлено!**\n\n"
@@ -241,15 +248,11 @@ async def forward_user_message(
                     reply_markup=admin_forward_keyboard(user.telegram_id),
                 )
 
-            await save_message(
+            await update_message_forward(
                 session,
-                conversation_id=conv.id,
-                from_user_id=user.telegram_id,
-                text=message.text or message.caption,
-                is_from_admin=False,
-                media_type=media_type,
-                file_id=file_id,
-                telegram_message_id=sent.message_id,
+                message_id=msg_record.id,
+                forward_message_id=sent.message_id,
+                forward_chat_id=admin_id,
             )
         except Exception as e:
             logger.error(f"Failed to forward to admin {admin_id}: {e}")

@@ -11,9 +11,5 @@ class QuickReplyStates(StatesGroup):
     waiting_for_text = State()
 
 
-class AdminReplyStates(StatesGroup):
-    waiting_for_reply = State()
-
-
 class EditPriceStates(StatesGroup):
     waiting_for_text = State()

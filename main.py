@@ -14,7 +14,6 @@ from db.database import init_db, close_db
 from bot.handlers import user, admin, callbacks
 from bot.middlewares.antispam import AntiSpamMiddleware
 from bot.middlewares.logging import LoggingMiddleware
-from bot.filters import IsAdminFilter
 
 load_dotenv()
 
